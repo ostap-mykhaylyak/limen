@@ -1,0 +1,53 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          check-latest: true
+          cache: false
+
+      - name: build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+            -o limen ./cmd/limen
+
+      - name: bundle
+        id: bundle
+        run: |
+          name="limen-${GITHUB_REF_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          mkdir -p "$name"
+          # The binary provisions itself on first run, so the bundle
+          # only carries the unit and the paperwork.
+          cp limen "$name/"
+          cp internal/bootstrap/limen.service "$name/"
+          cp README.md LICENSE "$name/"
+          tar -czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.bundle.outputs.name }}.tar.gz
+            ${{ steps.bundle.outputs.name }}.tar.gz.sha256

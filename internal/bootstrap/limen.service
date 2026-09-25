@@ -1,0 +1,68 @@
+[Unit]
+Description=limen - nginx manager with a web panel
+Documentation=https://github.com/ostap-mykhaylyak/limen
+After=network-online.target
+Wants=network-online.target
+Before=nginx.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/limen start --config /etc/limen/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+
+# /run/limen: status socket and pidfile, recreated at every start.
+RuntimeDirectory=limen
+RuntimeDirectoryMode=0750
+
+# limen writes the nginx configuration and signals nginx, so it runs
+# as root. Everything below narrows what that root can reach.
+User=root
+Group=root
+
+ProtectSystem=strict
+# The only writable paths: its own state, and the nginx tree it owns.
+ReadWritePaths=/etc/limen /var/lib/limen /var/log/limen /etc/nginx
+# `nginx -t` runs inside this sandbox too, and it opens the nginx logs
+# and creates nginx's temporary directories: without these, every test
+# of a candidate would fail. The leading '-' skips the ones a
+# distribution does not have (Debian uses /var/lib/nginx, the official
+# packages /var/cache/nginx).
+ReadWritePaths=-/var/log/nginx -/var/lib/nginx -/var/cache/nginx
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+# Root, with two powers only. CAP_CHOWN: the htpasswd files and the
+# per-host log directory go to the workers' group, and `nginx -t` gives
+# its temporary directories to the worker user. CAP_DAC_OVERRIDE:
+# `nginx -t` opens logs the workers own, and limen reads the ones
+# logrotate recreates as www-data:adm 0640. Signalling nginx needs
+# nothing more: its master runs as root.
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE
+# UMask stays the default on purpose: the workers go through the
+# rendered tree to read the htpasswd files at every request, and a 0027
+# mask would shut them out of it without a word from nginx -t.
+ProtectKernelLogs=true
+ProtectProc=invisible
+ProcSubset=pid
+SystemCallArchitectures=native
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+/var/log/limen/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root root
+    postrotate
+        systemctl reload limen.service >/dev/null 2>&1 || true
+    endscript
+}
+
+# The per-host logs nginx writes for limen (nginx.host_logs). A reload
+# of limen asks nginx to reopen its logs, after reopening its own.
+/var/log/nginx/limen/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root adm
+    sharedscripts
+    postrotate
+        systemctl reload limen.service >/dev/null 2>&1 || true
+    endscript
+}

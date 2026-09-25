@@ -1,0 +1,143 @@
+# limen — daemon configuration.
+#
+# This file describes limen itself. The objects it manages (proxy
+# hosts, redirects, streams, access lists, panel users) are NOT here:
+# each one is a YAML document of its own under /etc/limen/hosts,
+# /etc/limen/redirects, /etc/limen/streams, /etc/limen/access and
+# /etc/limen/users, so they stay readable and editable by hand when
+# the panel is down.
+#
+# Every field below may be omitted: the value shown is the default.
+# The file is re-read automatically when it changes, and on SIGHUP
+# (systemctl reload limen).
+
+panel:
+  # Where the web interface listens. It must be a loopback address or
+  # a unix socket path: limen is the control plane of the whole
+  # machine and is published by the nginx it manages, never directly.
+  # A unix socket ("/run/limen/panel.sock") works just as well and is
+  # one less port on the box.
+  listen: "127.0.0.1:9187"
+
+  # The host name the panel answers on. limen generates a virtual host
+  # for it, with its own certificate, and marks it protected: it
+  # cannot be deleted or renamed from the interface, because that is
+  # the door you would be locking yourself out of.
+  # Leave empty to publish nothing and reach the panel over an SSH
+  # tunnel to `listen` instead.
+  hostname: ""
+
+  # The certificate the panel's virtual host is served with:
+  #   ""       none: the panel is published over plain HTTP, and the
+  #            login travels in clear;
+  #   "acme"   limen issues and renews it itself (needs acme.enabled
+  #            and the hostname pointing at this machine);
+  #   a name   a certificate of the model (`limen cert list`).
+  certificate: ""
+
+  # Whose X-Forwarded-For is believed. Only the nginx in front should
+  # be listed here: an untrusted peer could otherwise forge the client
+  # address in the audit log and in the access lists.
+  trusted_proxies:
+    - "127.0.0.1/32"
+    - "::1/128"
+
+  # How long a login lasts.
+  session_ttl: "12h"
+
+  # Set to false only if the panel is served over plain HTTP, e.g.
+  # through an SSH tunnel, otherwise the browser drops the cookie.
+  secure_cookies: true
+
+  read_header_timeout: "10s"
+  idle_timeout: "120s"
+
+nginx:
+  # The nginx limen drives. The whole tree under conf_dir is
+  # generated: `limen init` backs up what was there first, into
+  # /var/lib/limen/backup.
+  bin: "/usr/sbin/nginx"
+  conf_dir: "/etc/nginx"
+  conf_file: "/etc/nginx/nginx.conf"
+  pid_file: "/run/nginx.pid"
+
+  # The unprivileged user nginx workers run as. Empty means detect it:
+  # www-data on Debian/Ubuntu, nginx on the official packages and images.
+  user: ""
+
+  error_log: "/var/log/nginx/error.log"
+  access_log: "/var/log/nginx/access.log"
+
+  # One access log (JSON, a request per line) and one error log per
+  # proxy host: <name>.access.log and <name>.error.log. The log viewer
+  # reads them, and limen's traffic metrics are counted from them.
+  host_logs: "/var/log/nginx/limen"
+
+  # Included at the top of nginx.conf, so that the modules the
+  # distribution loads dynamically (stream, on Debian) keep loading
+  # now that limen writes nginx.conf.
+  modules: "/etc/nginx/modules-enabled/*.conf"
+
+  # auto: listen on [::] too when the machine has IPv6. Or on, off.
+  ipv6: "auto"
+
+  # CA bundle for https backends with verify_tls.
+  trusted_ca: "/etc/ssl/certs/ca-certificates.crt"
+
+  # Rendered trees kept under /etc/nginx/limen.d to roll back to.
+  keep_generations: 5
+
+  # Global tuning, rendered into the http block.
+  worker_processes: "auto"
+  worker_connections: 1024
+  client_max_body_size: "1024m"
+  server_names_hash_bucket_size: 128
+
+  # Override how a candidate configuration is tested and applied.
+  # Empty means the built-in behaviour: `nginx -t -c <candidate>`, then
+  # SIGHUP to the pid in pid_file. {config} stands for the candidate's
+  # nginx.conf (appended as "-c {config}" when absent). Set these when
+  # nginx runs in a container or behind a wrapper, e.g.
+  #   test_command:   ["docker", "exec", "nginx", "nginx", "-t", "-c", "{config}"]
+  #   reload_command: ["docker", "exec", "nginx", "nginx", "-s", "reload"]
+  test_command: []
+  reload_command: []
+
+acme:
+  # Certificates from Let's Encrypt (or any ACME-compatible CA).
+  enabled: true
+  directory: "https://acme-v02.api.letsencrypt.org/directory"
+
+  # Used for expiry notices from the CA. Strongly recommended.
+  contact_email: ""
+
+  # How early a certificate is renewed, and how often the renewal loop
+  # looks at the pile.
+  renew_before: "720h"
+  check_every: "12h"
+
+  # ec256, ec384, rsa2048 or rsa4096.
+  key_type: "ec256"
+
+  # Extra CA bundle for the directory itself: a private ACME server.
+  directory_ca: ""
+
+  # DNS-01, the only way to a wildcard certificate: a program run as
+  #   hook present <record> <value>     then     hook cleanup <record> <value>
+  # with <record> like "_acme-challenge.example.com.". It talks to your
+  # DNS provider; limen waits up to dns_wait for the record to show.
+  dns_hook: ""
+  dns_wait: "2m"
+
+metrics:
+  # Serve the traffic metrics in the Prometheus text format, at
+  # /metrics: on a loopback address or a unix socket only, like the
+  # panel. Empty: nowhere (they stay in the panel and `limen status`).
+  listen: ""
+
+log:
+  # debug, info, warn or error. Files live in /var/log/limen:
+  #   limen.log  daemon lifecycle, config reloads, renewals
+  #   api.log    every panel request (audit trail)
+  #   apply.log  every nginx render, test and reload
+  level: "info"
