@@ -1,0 +1,19 @@
+Package: limen
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: Ostap Mykhaylyak <me@ostap.dev>
+Installed-Size: @SIZE@
+Depends: nginx | nginx-core | nginx-light | nginx-full | nginx-extras
+Recommends: logrotate
+Section: httpd
+Priority: optional
+Homepage: https://github.com/ostap-mykhaylyak/limen
+Description: nginx manager with a web panel and a command line
+ limen owns the nginx configuration of a machine and renders it from a
+ model of plain YAML files: proxy hosts, redirects, TCP/UDP streams,
+ access lists and certificates, issued and renewed through ACME. Every
+ change is tested with nginx -t before nginx is reloaded, and kept in a
+ history it can be rolled back from.
+ .
+ The package prepares the layout and saves the current nginx
+ configuration, but does not start limen: starting it takes nginx over.

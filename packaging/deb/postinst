@@ -1,0 +1,27 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+configure)
+    if [ -z "$2" ]; then
+        # A first install: the layout, and a copy of the nginx tree limen
+        # will replace. The service is not started here: starting it
+        # takes nginx over, and that is the operator's call.
+        /usr/sbin/limen --init --packaged
+    fi
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        if [ -n "$2" ]; then
+            # An upgrade: a limen that was running runs the new binary.
+            systemctl try-restart limen.service >/dev/null 2>&1 || true
+        fi
+    fi
+    ;;
+abort-upgrade | abort-remove | abort-deconfigure) ;;
+*)
+    echo "postinst called with unknown argument '$1'" >&2
+    exit 1
+    ;;
+esac
+
+exit 0

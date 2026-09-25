@@ -69,3 +69,20 @@ anything else without one.
 
 Present tense, one concern per commit, and a body that explains the
 reasoning when the change is not obvious from the diff.
+
+## Releases
+
+1. `CHANGELOG.md` gets a `## vX.Y.Z` section: the release notes are
+   taken from it, and the release fails without one.
+2. `main` is green on CI: tests, the integration tests on real nginx,
+   and the package installed on Debian and Ubuntu.
+3. Tag and push: `git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`.
+
+The release workflow tests the tag again, builds the tarballs and the
+Debian packages for amd64 and arm64, writes `SHA256SUMS`, attests every
+file's provenance and publishes the release. A pull request that
+changes the release workflow or `packaging/` rehearses all of it except
+the publishing.
+
+Before 1.0 a minor version may change the model's files or the API; its
+changelog section says so, and how to cross.
