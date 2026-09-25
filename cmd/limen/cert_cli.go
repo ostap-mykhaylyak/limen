@@ -202,5 +202,5 @@ func (c *cli) certImport(args []string) error {
 		return err
 	}
 	fmt.Fprintf(c.out, "certificate %q installed: %s, valid until %s\n", name, strings.Join(info.Names, ", "), info.NotAfter.Format(time.DateOnly))
-	return c.afterWrite()
+	return c.afterWrite(model.KindCertificate)
 }

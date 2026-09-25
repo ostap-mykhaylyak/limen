@@ -1,14 +1,16 @@
 // Package api is the REST interface of the panel: sessions, the model,
 // applies. The web interface is one of its clients.
 //
-// Every request is authenticated against a server-side session, and
-// the user behind it is read again from the model on every request: a
-// user disabled, deleted or demoted from the command line loses those
-// rights at their next click, not at the end of their session.
-// Every write is protected against cross-site requests three ways — a
-// per-session token in a header, the Origin of the request, and a JSON
-// body a form cannot send — and goes through the same store, the same
-// checks and the same apply as the command line.
+// Every request is authenticated against a server-side session or an
+// API token, and the user behind it is read again from the model on
+// every request: a user disabled, deleted or demoted from the command
+// line loses those rights at their next click, not at the end of their
+// session. Every write made with a session is protected against
+// cross-site requests three ways — a per-session token in a header, the
+// Origin of the request, and a JSON body a form cannot send. A write
+// made with an API token needs none of that: a browser never sends a
+// bearer token on its own. Either way it goes through the same store,
+// the same checks and the same apply as the command line.
 package api
 
 import (
@@ -48,6 +50,7 @@ const maxBody = 1 << 20
 type Deps struct {
 	Store     *store.Store
 	Sessions  *auth.Sessions
+	Tokens    *auth.Tokens // nil: no API tokens
 	Limiter   *auth.Limiter
 	Config    func() *config.Config
 	Apply     func(dryRun bool) (nginx.Result, error)
@@ -87,10 +90,21 @@ type API struct {
 // role levels, for comparisons.
 var levels = map[string]int{model.RoleViewer: 1, model.RoleOperator: 2, model.RoleAdmin: 3}
 
-// principal is who a request is made by.
+// principal is who a request is made by: a user with a session, or a
+// user through one of their API tokens. With a token, user carries the
+// role the token allows, which may be lower than the user's.
 type principal struct {
 	user    *model.User
 	session *auth.Session
+	token   *auth.Token
+}
+
+// who names the principal in the logs and the history.
+func (p *principal) who() string {
+	if p.token != nil {
+		return p.user.Name + " (token " + p.token.Name + ")"
+	}
+	return p.user.Name
 }
 
 type handler func(w http.ResponseWriter, r *http.Request, p *principal)
@@ -109,9 +123,10 @@ func New(d Deps) *API {
 	a := &API{d: d, mux: http.NewServeMux()}
 
 	a.mux.HandleFunc("POST "+Prefix+"/session", a.login)
-	a.route("GET /session", model.RoleViewer, a.whoami)
-	a.route("DELETE /session", model.RoleViewer, a.logout)
-	a.route("PUT /session/password", model.RoleViewer, a.changePassword)
+	a.sessionRoute("GET /session", model.RoleViewer, a.whoami)
+	a.sessionRoute("DELETE /session", model.RoleViewer, a.logout)
+	a.sessionRoute("PUT /session/password", model.RoleViewer, a.changePassword)
+	a.tokenRoutes()
 
 	a.route("GET /status", model.RoleViewer, a.status)
 	a.route("GET /apply", model.RoleViewer, a.lastApply)
@@ -140,15 +155,32 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	a.mux.ServeHTTP(w, r)
 }
 
+// route serves a request made with a session or an API token.
 func (a *API) route(pattern string, minRole string, h handler) {
+	a.handle(pattern, minRole, false, h)
+}
+
+// sessionRoute serves a request made with a session only. What manages
+// credentials — the session itself, passwords, users, tokens — is out
+// of reach of a token: a leaked token must not be able to make itself
+// a way back in.
+func (a *API) sessionRoute(pattern string, minRole string, h handler) {
+	a.handle(pattern, minRole, true, h)
+}
+
+func (a *API) handle(pattern string, minRole string, sessionOnly bool, h handler) {
 	method, path, _ := strings.Cut(pattern, " ")
 	a.mux.HandleFunc(method+" "+Prefix+path, func(w http.ResponseWriter, r *http.Request) {
 		p, ok := a.authenticate(w, r)
 		if !ok {
 			return
 		}
-		audit.From(r.Context()).User = p.user.Name
-		if unsafeMethod(r.Method) && !a.sameOrigin(w, r, p) {
+		audit.From(r.Context()).User = p.who()
+		if p.token != nil && sessionOnly {
+			writeError(w, http.StatusForbidden, "an API token cannot do this: log in to the panel, or use the command line")
+			return
+		}
+		if p.session != nil && unsafeMethod(r.Method) && !a.sameOrigin(w, r, p) {
 			return
 		}
 		if levels[p.user.Role] < levels[minRole] {
@@ -188,9 +220,14 @@ func (a *API) setCookie(w http.ResponseWriter, value string, expires time.Time) 
 	http.SetCookie(w, c)
 }
 
-// authenticate finds the session of a request and the user behind it,
-// read fresh from the model.
+// authenticate finds the session or the API token of a request and the
+// user behind it, read fresh from the model.
 func (a *API) authenticate(w http.ResponseWriter, r *http.Request) (*principal, bool) {
+	if scheme, presented, ok := strings.Cut(r.Header.Get("Authorization"), " "); ok && strings.EqualFold(scheme, "Bearer") {
+		// A request that brings a token is judged by it alone, whatever
+		// cookie comes with it.
+		return a.bearer(w, r, strings.TrimSpace(presented))
+	}
 	c, err := r.Cookie(a.cookieName())
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "not logged in")
@@ -216,6 +253,55 @@ func (a *API) authenticate(w http.ResponseWriter, r *http.Request) (*principal, 
 		return nil, false
 	}
 	return &principal{user: u, session: sess}, true
+}
+
+// bearer authenticates a request by its API token. Wrong tokens count
+// as failed logins, per token id and per client address.
+func (a *API) bearer(w http.ResponseWriter, r *http.Request, presented string) (*principal, bool) {
+	refuse := func(msg string) (*principal, bool) {
+		w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+		writeError(w, http.StatusUnauthorized, msg)
+		return nil, false
+	}
+	if a.d.Tokens == nil {
+		return refuse("API tokens are not enabled here")
+	}
+	ip := a.d.ClientIP(r)
+	key := "token:" + auth.TokenID(presented)
+	if ok, wait := a.d.Limiter.Allowed(key, ip); !ok {
+		w.Header().Set("Retry-After", fmt.Sprint(int(wait.Seconds())+1))
+		writeError(w, http.StatusTooManyRequests, "too many failed attempts, try again later")
+		return nil, false
+	}
+	tok, err := a.d.Tokens.Verify(presented, ip)
+	switch {
+	case errors.Is(err, auth.ErrTokenInvalid):
+		a.d.Limiter.Failed(key, ip)
+		a.d.Metrics.Login(false)
+		a.d.Log.Warn("API token refused", "client", ip)
+		return refuse("invalid API token")
+	case errors.Is(err, auth.ErrTokenExpired):
+		return refuse(fmt.Sprintf("API token %q expired on %s", tok.Name, tok.Expires.Format(time.DateOnly)))
+	case err != nil:
+		a.fail(w, err)
+		return nil, false
+	}
+	var u *model.User
+	if doc, err := a.d.Store.Fresh(model.KindUser, tok.User); err == nil {
+		u = doc.(*model.User)
+	}
+	// The user must still be there, enabled, and the same one: a user
+	// deleted and made again under the name does not inherit its tokens.
+	if u == nil || u.Disabled || !u.Created.Equal(tok.UserCreated) {
+		return refuse(fmt.Sprintf("API token %q: its user %q no longer exists or is disabled", tok.Name, tok.User))
+	}
+	// The token never reaches beyond its user, now: a user demoted since
+	// keeps tokens that can do no more than they can.
+	eff := *u
+	if levels[tok.Role] < levels[u.Role] {
+		eff.Role = tok.Role
+	}
+	return &principal{user: &eff, token: &tok}, true
 }
 
 // sameOrigin guards every write against cross-site requests.
@@ -470,8 +556,14 @@ func (a *API) change(r *http.Request, p *principal, fallback string) store.Chang
 	}
 	if note == "" {
 		note = fallback
+		if p.token != nil {
+			note = strings.Replace(note, "from the panel", "through the API", 1)
+		}
 	}
 	audit.From(r.Context()).Action = note
+	if p.token != nil {
+		return store.Change{Author: "api:" + p.user.Name + ":" + p.token.Name, Source: "api", Note: note}
+	}
 	return store.Change{Author: "panel:" + p.user.Name, Source: "panel", Note: note}
 }
 

@@ -165,14 +165,16 @@
     else toast('success', what, 'Generation ' + res.generation + ' installed; nginx is not running.');
   }
 
-  function dialog(title, body, confirmText, danger) {
+  // dialog asks for a confirmation; with alone, it only shows something
+  // and has no Cancel.
+  function dialog(title, body, confirmText, danger, alone) {
     return new Promise(function (resolve) {
       var d = h('dialog', { class: 'dialog' });
       var ok = h('button', { class: 'btn ' + (danger ? 'danger' : 'primary'), text: confirmText, onclick: function () { d.close('ok'); } });
       append(d, [
         h('div', { class: 'dialog-body' }, h('div', { class: 'dialog-title', text: title }), body),
         h('div', { class: 'dialog-actions' },
-          h('button', { class: 'btn', text: 'Cancel', onclick: function () { d.close('cancel'); } }), ok)
+          alone ? null : h('button', { class: 'btn', text: 'Cancel', onclick: function () { d.close('cancel'); } }), ok)
       ]);
       d.addEventListener('close', function () { resolve(d.returnValue === 'ok'); d.remove(); });
       document.body.appendChild(d);
@@ -469,6 +471,7 @@
       h('div', { class: 'menu-sep' }),
       h('div', { class: 'menu-row' }, h('span', { text: 'Theme' }), themeSeg()),
       h('button', { class: 'menu-row', role: 'menuitem', onclick: changePassword }, h('span', { text: 'Change password' })),
+      h('button', { class: 'menu-row', role: 'menuitem', onclick: function () { closeMenus(); location.hash = '#/tokens'; } }, h('span', { text: 'API tokens' })),
       h('div', { class: 'menu-sep' }),
       h('button', { class: 'menu-row', role: 'menuitem', onclick: logout }, h('span', { text: 'Log out' })));
     var btn = h('button', { class: 'account-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false', onclick: function (e) {
@@ -1672,6 +1675,95 @@
   }
 
   // ─────────────────────────────────────────────────────────────────
+  // API tokens
+  // ─────────────────────────────────────────────────────────────────
+
+  var TOKEN_STATE = { active: ['success', 'Active'], expired: ['idle', 'Expired'], orphaned: ['warning', 'Orphaned'] };
+
+  function tokensPage() {
+    var crumbs = [{ label: 'API tokens' }];
+    shell('', crumbs, h('div', { class: 'loading', text: 'Loading…' }));
+    api('GET', '/tokens').then(function (data) {
+      var items = data.items || [];
+      var cols = [
+        ['Name', function (t) { return h('span', { title: t.description || '', text: t.name }); }, 'name'],
+        can('admin') ? ['User', function (t) { return t.user; }, 'mono'] : null,
+        ['Role', function (t) { return t.role; }],
+        ['State', function (t) { var st = TOKEN_STATE[t.state] || ['idle', t.state]; return pill(st[0], st[1]); }],
+        ['Expires', function (t) { return t.expires ? stamp(t.expires).slice(0, 10) : 'never'; }, 'mono'],
+        ['Last used', function (t) { return t.last_used ? ago(t.last_used) + ' · ' + t.last_client : 'never'; }, 'mono'],
+        ['', function (t) {
+          return h('button', { class: 'btn small danger', text: 'Revoke', onclick: function () { revokeToken(t); } });
+        }, 'actions']
+      ].filter(Boolean);
+      var table = items.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
+        h('thead', {}, h('tr', {}, cols.map(function (c) { return h('th', { text: c[0] }); }))),
+        h('tbody', {}, items.map(function (t) {
+          return h('tr', { class: t.state === 'active' ? null : 'dim' }, cols.map(function (c) { return h('td', { class: c[2] || null }, c[1](t)); }));
+        }))))
+        : h('div', { class: 'empty' }, h('span', { class: 'headline', text: 'No API tokens yet.' }),
+          h('span', { class: 'note', text: 'A token lets a script use the API as you, without your password.' }));
+      shell('', crumbs, [
+        h('div', { class: 'page-head' },
+          h('div', {}, h('h1', { class: 'page-title', text: 'API tokens' }),
+            h('p', { class: 'page-sub', text: 'Keys for scripts, sent as Authorization: Bearer. A token acts as its user, never with more than their role, and cannot manage users or tokens.' })),
+          h('div', { class: 'page-actions' }, h('button', { class: 'btn primary', onclick: newToken }, icon('plus'), 'New token'))),
+        h('section', { class: 'card flush' }, table)
+      ]);
+    }).catch(pageError('API tokens'));
+  }
+
+  function newToken() {
+    var name = h('input', { class: 'input mono', autocomplete: 'off', placeholder: 'deploy-ci' });
+    var role = h('select', { class: 'input' }, ['viewer', 'operator', 'admin'].filter(can).map(function (r) {
+      return h('option', { value: r, text: r, selected: r === state.user.role });
+    }));
+    var expires = h('select', { class: 'input' },
+      [['30', '30 days'], ['90', '90 days'], ['365', 'One year'], ['0', 'Never']].map(function (o) {
+        return h('option', { value: o[0], text: o[1], selected: o[0] === '90' });
+      }));
+    var description = h('input', { class: 'input', autocomplete: 'off', placeholder: 'What it is for' });
+    var pass = h('input', { class: 'input', type: 'password', autocomplete: 'current-password' });
+    var body = h('div', { class: 'stack' }, field('Name', name), field('Role', role), field('Expires', expires),
+      field('Description', description), field('Your password', pass),
+      h('p', { class: 'note', text: 'The token is shown once, right after this.' }));
+    dialog('New API token', body, 'Create', false).then(function (ok) {
+      if (!ok) return;
+      api('POST', '/tokens', { name: name.value.trim(), role: role.value, expires_days: Number(expires.value),
+        description: description.value.trim(), password: pass.value }).then(function (res) {
+        showToken(res);
+        tokensPage();
+      }).catch(function (e) { toast('failed', 'Token not created', e.message); });
+    });
+  }
+
+  function showToken(res) {
+    var box = h('input', { class: 'input mono', readonly: true, value: res.token, 'aria-label': 'API token' });
+    var copy = h('button', { class: 'btn', type: 'button', text: 'Copy', onclick: function () {
+      box.select();
+      var done = function () { copy.textContent = 'Copied'; };
+      if (navigator.clipboard) navigator.clipboard.writeText(res.token).then(done, function () { document.execCommand('copy'); done(); });
+      else { document.execCommand('copy'); done(); }
+    } });
+    var body = h('div', { class: 'stack' },
+      h('p', { class: 'note', text: 'Copy it now: limen keeps only its hash, and cannot show it again.' }),
+      h('div', { class: 'token-row' }, box, copy),
+      h('p', { class: 'note mono', text: 'curl -H "Authorization: Bearer $LIMEN_TOKEN" ' + location.origin + '/api/v1/status' }));
+    dialog('Token ' + res.item.name, body, 'Done', false, true);
+    setTimeout(function () { box.select(); }, 0);
+  }
+
+  function revokeToken(t) {
+    confirmDanger('Revoke ' + t.name + '?', 'Scripts using it are refused from their next request. This cannot be undone.', 'Revoke').then(function (ok) {
+      if (!ok) return;
+      api('DELETE', '/tokens/' + encodeURIComponent(t.name)).then(function () {
+        toast('success', 'Token ' + t.name + ' revoked');
+        tokensPage();
+      }).catch(function (e) { toast('failed', 'Not revoked', e.message); });
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────
   // Router
   // ─────────────────────────────────────────────────────────────────
 
@@ -1692,6 +1784,7 @@
     var coll = parts[0];
     if (!coll) { refreshStatus().then(dashboard); return; }
     if (coll === 'logs' && can('operator')) { systemLogsPage(parts[1]); return; }
+    if (coll === 'tokens') { tokensPage(); return; }
     if (coll === 'hosts' && parts[2] === 'logs') { hostLogsPage(parts[1]); return; }
     if (!KINDS[coll] || (KINDS[coll].role && !can(KINDS[coll].role))) {
       shell('', [{ label: 'Not found' }], h('div', { class: 'empty' }, h('span', { class: 'headline', text: 'There is nothing here.' })));

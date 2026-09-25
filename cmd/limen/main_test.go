@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -67,6 +69,24 @@ func TestUnknownCommandIsRejected(t *testing.T) {
 	for _, cmd := range []string{"", "--apply", "-status", "hosts", "-host", "applyy"} {
 		if _, err := normalizeCommand(cmd); err == nil {
 			t.Errorf("%q was accepted", cmd)
+		}
+	}
+}
+
+// Every object command must reach its handler through main() itself:
+// a second list of them there once forgot `logs`, and every test that
+// called the handlers directly passed.
+func TestMainDispatchesEveryObjectCommand(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for cmd := range objectCommands {
+		c := exec.Command(exe, cmd, "-h")
+		c.Env = append(os.Environ(), "LIMEN_RUN_MAIN=1")
+		out, _ := c.CombinedOutput()
+		if strings.Contains(string(out), "unhandled command") || !strings.Contains(strings.ToLower(string(out)), "usage") {
+			t.Errorf("limen %s -h:\n%s", cmd, out)
 		}
 	}
 }

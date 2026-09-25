@@ -38,8 +38,15 @@ const (
 	// SessionsFile keeps the panel's sessions across restarts, by the
 	// hash of their ids only.
 	SessionsFile = DataDir + "/sessions.json"
-	BackupDir    = DataDir + "/backup"
-	RenderedDir  = DataDir + "/rendered"
+
+	// TokensFile keeps the API tokens, by the hash of their secrets
+	// only; TokensLock serializes its writers, the daemon and the
+	// command line.
+	TokensFile = DataDir + "/tokens.json"
+	TokensLock = DataDir + "/.tokens.lock"
+
+	BackupDir   = DataDir + "/backup"
+	RenderedDir = DataDir + "/rendered"
 
 	// ApplyLock serializes applies to nginx across processes: the
 	// daemon and the command line both apply.
@@ -62,8 +69,10 @@ const (
 	NginxBin      = "/usr/sbin/nginx"
 
 	// Deploy targets used by `limen init`.
-	UnitFile      = "/etc/systemd/system/limen.service"
-	LogrotateFile = "/etc/logrotate.d/limen"
+	UnitFile = "/etc/systemd/system/limen.service"
+	// PackagedUnitFile is where the Debian package puts the unit.
+	PackagedUnitFile = "/usr/lib/systemd/system/limen.service"
+	LogrotateFile    = "/etc/logrotate.d/limen"
 )
 
 // Log file names, to be joined with LogDir.
