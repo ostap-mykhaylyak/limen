@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+remove | deconfigure)
+    # Stopped, not undone: nginx keeps serving the last configuration
+    # limen installed.
+    if [ -d /run/systemd/system ]; then
+        systemctl stop limen.service >/dev/null 2>&1 || true
+    fi
+    ;;
+upgrade | failed-upgrade) ;;
+*)
+    echo "prerm called with unknown argument '$1'" >&2
+    exit 1
+    ;;
+esac
+
+exit 0

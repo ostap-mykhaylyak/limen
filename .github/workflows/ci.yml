@@ -74,16 +74,16 @@ jobs:
         run: go build -trimpath -ldflags "-s -w -X main.version=ci" -o bin/limen-${{ matrix.goarch }} ./cmd/limen
 
   # The renderer is only as good as what a real nginx accepts: the
-  # integration tests drive one, on both lines limen targets — the
-  # official image (recent, stream built in) and Debian's package
-  # (older, stream loaded as a dynamic module).
+  # integration tests drive one, on the lines limen targets — the
+  # official image (recent, stream built in), and Debian's and Ubuntu's
+  # packages (older, stream loaded as a dynamic module).
   integration:
     runs-on: ubuntu-latest
     needs: test
     strategy:
       fail-fast: false
       matrix:
-        image: ["nginx:stable", "debian:bookworm-slim"]
+        image: ["nginx:stable", "debian:bookworm-slim", "ubuntu:24.04"]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -98,3 +98,36 @@ jobs:
           docker run --rm -v "$PWD:/t" -e LIMEN_TEST_NGINX=/usr/sbin/nginx ${{ matrix.image }} sh -c '
             command -v nginx >/dev/null || { apt-get update -qq && apt-get install -y -qq nginx libnginx-mod-stream >/dev/null; }
             /t/nginx.test -test.run RealNginx -test.v -test.count=1'
+
+  # The package a release ships, built the way the release builds it and
+  # installed on the systems it is for: apt must find nginx, and the
+  # maintainer scripts must prepare the layout without starting limen.
+  package:
+    runs-on: ubuntu-latest
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["debian:bookworm", "ubuntu:24.04"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          check-latest: true
+          cache: false
+      - name: build the package
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=v0.0.0-ci" -o limen ./cmd/limen
+          sh packaging/deb/build.sh 0.0.0~ci amd64 limen out
+      - name: install it on ${{ matrix.image }}
+        run: |
+          docker run --rm -v "$PWD:/t" ${{ matrix.image }} sh -ec '
+            apt-get update -qq
+            apt-get install -y -qq /t/out/limen_0.0.0~ci_amd64.deb >/dev/null
+            limen --version
+            test -d /etc/limen/users -a -f /etc/limen/config.yaml
+            test -f /usr/lib/systemd/system/limen.service -a ! -e /etc/systemd/system/limen.service
+            ls -d /var/lib/limen/backup/nginx-*
+            apt-get purge -y -qq limen >/dev/null
+            test ! -e /usr/sbin/limen -a ! -e /var/log/limen -a -d /etc/limen'

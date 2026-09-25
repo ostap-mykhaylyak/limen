@@ -18,7 +18,7 @@ the machine has no business being reachable directly.
 
 ## Status
 
-`limen` is at **M7**: it drives nginx, it has its web panel, it
+`limen` **v0.1.0** is the first release. It drives nginx, it has its web panel, it
 issues and renews its certificates, a host can be tuned part by part —
 custom locations with their own backend or guard, the conversation with
 the backend, hand-written directives checked against a closed list —
@@ -33,11 +33,12 @@ Certificates come from any ACME CA — HTTP-01 answered through nginx,
 DNS-01 through a hook for wildcards — or are uploaded, and their expiry
 is watched either way. An existing nginx configuration can be imported.
 The model is managed from the command line, from the REST API, and from
-the web interface built on it — with sessions, roles and an audit trail.
+the web interface built on it — with sessions, roles and an audit trail
+— and scripts use it with API tokens.
 
-Tested against a real nginx on both lines limen targets: the official
-image (1.30, stream built in) and Debian's package (1.22, stream loaded
-as a dynamic module) — proxying, basic auth checked by the workers,
+Tested against a real nginx on the lines limen targets: the official
+image (1.30, stream built in), and Debian's (1.22) and Ubuntu's (1.24)
+packages, with stream loaded as a dynamic module — proxying, basic auth checked by the workers,
 TLS with HTTP/2 and HSTS, streams guarded by address, custom locations
 and snippets (including one written to break out of its block), and the
 failure paths. The ACME
@@ -48,22 +49,54 @@ CA cannot validate.
 
 ## Install
 
+limen runs on Linux, next to the nginx it manages (1.22 or later). Each
+[release](https://github.com/ostap-mykhaylyak/limen/releases) has a
+Debian package and a tarball for amd64 and arm64, a `SHA256SUMS`, and
+signed build provenance.
+
+### Debian and Ubuntu
+
 ```sh
-make static           # CGO_ENABLED=0 GOOS=linux, bin/limen
-sudo ./bin/limen --init
-sudo systemctl daemon-reload
+v=0.1.0 arch=$(dpkg --print-architecture)
+base=https://github.com/ostap-mykhaylyak/limen/releases/download/v$v
+curl -LO $base/limen_${v}_${arch}.deb -LO $base/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+# optional: proof that this repository's workflow built it
+gh attestation verify limen_${v}_${arch}.deb --repo ostap-mykhaylyak/limen
+sudo apt install ./limen_${v}_${arch}.deb
+```
+
+apt brings nginx along when it is missing. The package installs the
+binary, the systemd unit and the logrotate policy, prepares the layout,
+and **copies the existing `/etc/nginx` into `/var/lib/limen/backup/`**,
+the way back to whatever the machine was serving before. It does not
+take nginx over: that happens when limen starts, or at the first change
+the command line makes to what nginx serves (a user is not one), and
+it is your call.
+
+```sh
+sudoedit /etc/limen/config.yaml      # panel.hostname, acme.contact_email
+sudo limen --import                  # optional: what of the current sites can come along
+sudo limen user add ostap --role admin --password-stdin
 sudo systemctl enable --now limen
 limen status
 ```
 
-`--init` creates the filesystem layout, installs the binary in
-`/usr/sbin`, writes the systemd unit and the logrotate policy — and,
-before limen takes the nginx tree over, **copies the existing
-`/etc/nginx` into `/var/lib/limen/backup/`**. That copy is the way back
-to whatever the machine was serving before.
+### Any other Linux
 
-`make install` does the same from a checkout, without the self-install
-step.
+```sh
+tar -xzf limen-v0.1.0-linux-amd64.tar.gz
+sudo ./limen-v0.1.0-linux-amd64/limen --init
+sudo systemctl daemon-reload
+sudo systemctl enable --now limen
+```
+
+`--init` does what the package does and, having no package to do it,
+installs the binary in `/usr/sbin`, the unit in `/etc/systemd/system`
+and the logrotate policy itself. Where the package is installed it
+leaves those alone: a unit in `/etc` would shadow the package's, and
+keep an old one in charge after every upgrade. From a checkout,
+`make static` builds `bin/limen` and `make install` installs it.
 
 The binary also provisions itself: started with no configuration at
 all, it creates the default layout from its embedded skeleton, says so
@@ -77,6 +110,62 @@ limen writes, private devices and `/tmp`, other users' processes
 hidden, a system call filter, and two capabilities out of root's forty:
 `CAP_CHOWN` and `CAP_DAC_OVERRIDE`, which `nginx -t` and the per-host
 logs need. `systemd-analyze security limen` rates it 2.2.
+
+## Running in production
+
+Before the machine takes traffic:
+
+- `panel.hostname` on a name only you use, with `panel.certificate:
+  acme` (or a certificate of the model) and `secure_cookies` left on —
+  or no hostname at all, and the panel through an SSH tunnel;
+- `acme.contact_email` set: the CA writes there before a certificate
+  limen could not renew expires;
+- two admins, so that one lost password is not a locked door;
+- scripts on [API tokens](#api-tokens) with the least role they need
+  and an expiry, never on a person's password;
+- `limen status` in the monitoring you already have (its exit codes
+  follow the Nagios convention), or `metrics.listen` scraped by
+  Prometheus;
+- the backups below, and a restore tried once.
+
+### Upgrades
+
+With the package, `sudo apt install ./limen_<version>_<arch>.deb`: a
+running limen restarts on the new binary. nginx keeps running: limen
+reloads it only if the new version renders a different configuration,
+and tests that with `nginx -t` first, like any change. With the tarball,
+replace `/usr/sbin/limen` and `systemctl restart limen`. Read the
+[changelog](CHANGELOG.md) first: before 1.0 a minor version may change
+the files, and says how to cross.
+
+### Backups
+
+Two directories are the whole state:
+
+- `/etc/limen`: the configuration and the model, with its history;
+- `/var/lib/limen`: certificates and their keys, ACME accounts, the
+  sessions and the API tokens (both by hash only).
+
+```sh
+sudo tar -czf limen-$(date +%F).tar.gz -C / etc/limen var/lib/limen
+```
+
+The archive holds private keys and password hashes: keep it the way you
+would keep them. The nginx configuration needs no backup, since limen
+renders it from the model. To restore, on a machine with limen
+installed: `systemctl stop limen`, unpack the archive in `/`, `systemctl
+start limen`; it renders the nginx tree, tests it and installs it.
+
+### Uninstall
+
+`apt remove limen` stops limen and removes the binary; nginx keeps
+serving the last configuration limen installed, except the panel's
+host, which answers 502. `apt purge limen` also removes the logs, and
+keeps `/etc/limen` and `/var/lib/limen`: some certificates cannot be
+issued again. To go back to the nginx of before limen, copy
+`/var/lib/limen/backup/nginx-<time>/` over `/etc/nginx` and reload
+nginx. `limen --purge`, run before the package is removed, deletes the
+configuration, the data and the logs outright.
 
 ## Command line
 
@@ -96,12 +185,14 @@ stream         TCP/UDP:      list, show, add, set, rm, enable, disable
 access         access lists: list, show, add, set, rm, passwd, deluser
 cert           certificates: list, show, add, set, rm, renew, import
 user           panel users:  list, show, add, set, rm, enable, disable, passwd
+token          API tokens:   list, add, rm
 history        past revisions of an object
 rollback       put a past revision back
 apply          render, test with nginx -t, install, reload (--dry-run)
 logs           nginx-error, nginx-access, limen, apply, api (-n, --follow, --grep)
 
 --init         install layout, binary, systemd unit, logrotate policy
+               (--packaged: the layout only, what the Debian package runs)
 --purge        remove config, data and logs (asks for confirmation)
 --check-config parse the configuration, print what it says, then exit
 --import       bring an existing nginx configuration into the model
@@ -116,6 +207,9 @@ Common flags: `--config <file>`, `--socket <path>`, `--pidfile <path>`.
 ```sh
 # the first user must be an admin
 limen user add ostap --role admin --email ostap@example.com --password-stdin
+
+# a key for a script: printed once, on stdout alone
+limen token add deploy --user ostap --role operator --expires 90d > deploy.token
 
 # an access list: rules are evaluated in order, the first match wins
 limen access add office --rule allow:10.0.0.0/8 --rule deny:all
@@ -551,8 +645,8 @@ the distinction between interface text and machine data in monospace).
 
 The API lives under `/api/v1` on the panel's address, and is published
 with it by the protected virtual host limen writes for `panel.hostname`.
-It speaks JSON both ways and is what the web interface will use; any
-other client can use it the same way.
+It speaks JSON both ways and is what the web interface uses; a script
+uses it the same way, with an [API token](#api-tokens).
 
 ```
 POST   /api/v1/session                 log in {username, password}
@@ -578,6 +672,10 @@ GET    /api/v1/traffic?window=5m|1h|24h       nginx, every host, the sum over ti
 GET    /api/v1/hosts/{name}/traffic?window=   a host: summary and series
 GET    /api/v1/hosts/{name}/logs/access|error ?lines= &q= &status=5xx &after=OFFSET
 GET    /api/v1/logs/{stream}                  nginx-error, nginx-access, limen, apply, api
+
+GET    /api/v1/tokens                  my API tokens (an admin: everybody's)
+POST   /api/v1/tokens                  {name, role, expires_days, description, password}
+DELETE /api/v1/tokens/{name}           revoke
 ```
 
 A log page answers its lines, oldest first, and an `offset`: asking
@@ -610,6 +708,29 @@ request, not from an index that waits for a reload.
 same-origin request (`Origin`, `Sec-Fetch-Site`), and a JSON body — a
 cross-site form can send none of the three. Bodies are strict: an
 unknown field is an error, not a setting that silently does nothing.
+
+<a id="api-tokens"></a>**API tokens.** A script sends `Authorization: Bearer limen_<id>_<secret>`,
+and needs no cookie, no CSRF token and no `Origin`: a browser never
+sends a bearer token by itself, so there is no cross-site request to
+guard against. Make one with `limen token add NAME --user USER` or from
+the panel's account menu, which asks for your password again. It is
+shown once; limen keeps the id, which finds it, and the SHA-256 of the
+secret, which opens nothing.
+
+```sh
+curl -H "Authorization: Bearer $(cat deploy.token)" https://limen.example.com/api/v1/status
+```
+
+A token acts as its user, with its own role or a lower one — never above
+what the user can do *now*, so a demotion bites the user's tokens too.
+It stops working when it expires, when it is revoked (from the panel, or
+`limen token rm`, effective at the next request), when its user is
+disabled, and for good when its user is removed: the tokens go with the
+user, and a new user of the same name inherits nothing. A token cannot
+manage users or tokens, change a password, or open a session: a leaked
+token must not be able to make itself another way in. Wrong tokens count
+as failed logins, and every request made with one lands in `api.log` as
+`user (token name)`, and in the history as `api:user:name`.
 
 **Logins.** A wrong password and an unknown user get the same answer,
 at the same cost. Five failures per user or twenty per address in
@@ -683,6 +804,8 @@ list. It never approximates:
 
 ```
 /usr/sbin/limen               the binary
+/usr/lib/systemd/system/limen.service
+                              the unit, from the package (--init: /etc/systemd/system)
 /etc/limen/config.yaml        daemon configuration
 /etc/limen/{hosts,redirects,streams,access,certificates,users}/
                               one YAML document per managed object
@@ -690,6 +813,7 @@ list. It never approximates:
 /var/lib/limen/certs/         certificate files, keys and attempts, per certificate (0700)
 /var/lib/limen/acme/          ACME account keys (0700)
 /var/lib/limen/sessions.json  the panel's sessions, by the hash of their ids (0600)
+/var/lib/limen/tokens.json    the API tokens, by the hash of their secrets (0600)
 /var/lib/limen/backup/        the nginx tree as it was before limen
 /etc/nginx/nginx.conf         generated by limen
 /etc/nginx/limen -> limen.d/<generation>
@@ -776,7 +900,7 @@ What the generated configuration does on purpose:
 | **M5** | certificates | ACME with HTTP-01 through nginx and DNS-01 through a hook, renewal loop with backoff, uploaded certificates, the panel's own certificate, expiry in status and in the UI; tested against Pebble — **done** |
 | **M6** | fine control | custom locations with their own backend and guard, access lists that override what they inherit, streams guarded by address, proxy options and headers, snippets on a closed list, locations in the import — **done** |
 | **M7** | observability | per-host JSON access logs and error logs, a log viewer that follows, traffic counted from the logs (read back at start, rotation-proof), nginx's counters, charts in the panel, a 5xx check in status, Prometheus — **done** |
-| M8 | release | hardening — the unit proven under real systemd and narrowed to two capabilities, rate limits in front of the panel, fuzzing of every parser of outside input, govulncheck in CI, bounded reads and timeouts — **done**; packaging and publishing — to do |
+| **M8** | release | hardening — the unit proven under real systemd and narrowed to two capabilities, rate limits in front of the panel, fuzzing of every parser of outside input, govulncheck in CI, bounded reads and timeouts; API tokens for scripts; a Debian package tested on Debian and Ubuntu, release artifacts with checksums and build provenance — **done**, released as v0.1.0 |
 
 ## Development
 
@@ -792,8 +916,8 @@ machine everything builds and the suite runs, except the AF_UNIX round
 trips, which are skipped with a reason and exercised in CI.
 
 The integration tests drive a real nginx and run when
-`LIMEN_TEST_NGINX` names its binary, as root. CI runs them on both
-lines limen targets; by hand:
+`LIMEN_TEST_NGINX` names its binary, as root. CI runs them on the
+official image, Debian and Ubuntu; by hand:
 
 ```sh
 CGO_ENABLED=0 go test -c -o nginx.test ./internal/nginx/

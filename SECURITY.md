@@ -2,12 +2,20 @@
 
 ## Reporting a vulnerability
 
-Report privately through GitHub Security Advisories on this
-repository, or by email to the maintainer. Please do not open a public
-issue for something exploitable.
+Report privately, through [GitHub's private vulnerability
+reporting](https://github.com/ostap-mykhaylyak/limen/security/advisories/new)
+(the repository's Security tab, "Report a vulnerability"). Please do not
+open a public issue for something exploitable.
 
 Include what you did, what happened, and the version (`limen
---version`). You will get an acknowledgement within a few days.
+--version`). You will get an acknowledgement within a few days, and the
+fix will be released with an advisory that credits you, unless you
+would rather it did not.
+
+## Supported versions
+
+Fixes go into the latest release only. Before 1.0 there are no
+maintenance branches: upgrading to the latest release is the fix.
 
 ## What limen assumes
 
@@ -106,18 +114,33 @@ per-session CSRF token, a same-origin request and a JSON body; logins
 are throttled per user and per address, and cost the same whether the
 user exists or not.
 
+API tokens are for scripts. A token is 32 random bytes behind a public
+id, shown once; `/var/lib/limen/tokens.json` (`0600`) keeps the id and
+the SHA-256 of the secret. A token needs no CSRF token because a
+browser never sends a bearer token by itself. It acts as its user, never
+above the role the user has at the moment of the request, and dies with
+the user: removing a user revokes its tokens, and a user made again
+under the same name does not inherit them. What manages credentials —
+users, tokens, passwords, sessions — is out of a token's reach, so a
+leaked one cannot open itself another way in, and making one from the
+panel asks for the password again. Wrong tokens count as failed logins.
+A revocation, from the panel or the command line, takes effect at the
+next request.
+
 ## How it is checked
 
 - **Tests that break the code on purpose.** Every rule above has a test,
   and every test is checked by a mutant: the rule is broken in the
-  source, and the suite must fail. From M1 to M8, 115 mutants, all
+  source, and the suite must fail. From M1 to M8, 139 mutants, all
   caught.
 - **Against the real thing.** The renderer runs against real nginx on
-  both lines limen targets (the official image and Debian's package):
+  the lines limen targets (the official image, Debian's and Ubuntu's
+  packages):
   proxying, basic auth checked by the workers, TLS, streams, custom
   locations, snippets — one of them written to break out of its block —
   logs, rotation and rate limits. The ACME client runs against Pebble,
-  Let's Encrypt's test CA. The unit runs under real systemd.
+  Let's Encrypt's test CA. The unit runs under real systemd, and the
+  Debian package is installed, started, upgraded and purged there.
 - **Fuzzing.** The snippet boundary is a fuzzed property: whatever
   snippet is accepted, rendered into a host and read back the way nginx
   reads it, is one server block holding exactly the directives that
@@ -126,6 +149,10 @@ user exists or not.
   panics.
 - **Known vulnerabilities.** CI runs `govulncheck` on every push, for
   the standard library of the toolchain and for the dependencies.
+- **Provenance.** Release files are built by the release workflow from
+  the tag, listed in `SHA256SUMS`, and attested:
+  `gh attestation verify FILE --repo ostap-mykhaylyak/limen` proves where
+  a file came from.
 
 ## Scope
 

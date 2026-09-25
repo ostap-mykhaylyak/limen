@@ -1,0 +1,30 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+remove)
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+    ;;
+purge)
+    rm -f /etc/systemd/system/multi-user.target.wants/limen.service
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+    rm -rf /var/log/limen
+    # The model and the certificates are the operator's work, and some
+    # certificates cannot be issued again: a purge does not throw them
+    # away. `limen --purge` does, before the package is removed.
+    if [ -d /etc/limen ] || [ -d /var/lib/limen ]; then
+        echo "limen: /etc/limen (the model) and /var/lib/limen (certificates, tokens) are kept; remove them by hand."
+    fi
+    ;;
+upgrade | failed-upgrade | abort-install | abort-upgrade | disappear) ;;
+*)
+    echo "postrm called with unknown argument '$1'" >&2
+    exit 1
+    ;;
+esac
+
+exit 0
