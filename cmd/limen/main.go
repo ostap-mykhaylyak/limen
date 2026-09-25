@@ -128,7 +128,10 @@ func main() {
 		os.Exit(status.Run(version, *sock, *cfgPath, *jsonOut, *watch, os.Stdout))
 
 	case "init":
-		fatalIf(bootstrap.Init(version, os.Stdout))
+		fs := flag.NewFlagSet("init", flag.ExitOnError)
+		packaged := fs.Bool("packaged", false, "the package owns the binary, the unit and logrotate: prepare the layout only")
+		fs.Parse(args)
+		fatalIf(bootstrap.Init(version, os.Stdout, *packaged))
 
 	case "purge":
 		fs := flag.NewFlagSet("purge", flag.ExitOnError)
@@ -151,7 +154,14 @@ func main() {
 	case "help":
 		usage(os.Stdout)
 
-	case "host", "redirect", "stream", "access", "user", "cert", "history", "rollback", "apply":
+	default:
+		// The object commands come from their table, not from a second
+		// list here that could forget one (it once forgot `logs`).
+		if !objectCommands[cmd] {
+			// Unreachable: normalizeCommand rejects anything else.
+			fmt.Fprintf(os.Stderr, "limen: unhandled command %q\n", cmd)
+			os.Exit(2)
+		}
 		switch err := runObject(cmd, args); {
 		case err == nil, errors.Is(err, errHelpShown):
 		case errors.Is(err, errUsage):
@@ -159,13 +169,6 @@ func main() {
 		default:
 			fatalIf(err)
 		}
-
-	default:
-		// Unreachable: normalizeCommand rejects anything not handled
-		// above. Kept as a guard against a command being added to one
-		// table but not to this switch.
-		fmt.Fprintf(os.Stderr, "limen: unhandled command %q\n", cmd)
-		os.Exit(2)
 	}
 }
 
@@ -305,12 +308,17 @@ func runDaemon(cfgPath, pidfile, sockPath string) error {
 	if err != nil {
 		return fmt.Errorf("sessions: %w", err)
 	}
+	tokens, err := auth.OpenTokens(paths.TokensFile, paths.TokensLock)
+	if err != nil {
+		return err
+	}
 	// ClientIP lives on the panel, which knows the trusted proxies; the
 	// API is built before the panel, so it goes through this variable.
 	var web *panel.Server
 	restAPI := api.New(api.Deps{
 		Store:    model,
 		Sessions: sessions,
+		Tokens:   tokens,
 		Limiter:  auth.NewLimiter(),
 		Config:   cfgs.Get,
 		Apply: func(dryRun bool) (nginx.Result, error) {
@@ -655,6 +663,7 @@ Objects (bare nouns, then a verb; limen host -h for the details):
   access         access lists: list, show, add, set, rm, passwd, deluser
   cert           certificates: list, show, add, set, rm, renew, import
   user           panel users:  list, show, add, set, rm, enable, disable, passwd
+  token          API tokens:   list, add, rm (for scripts: Authorization: Bearer)
   history        history KIND NAME: past revisions of an object
   rollback       rollback KIND NAME REVISION: put one back
   apply          render the model, test it with nginx -t, install, reload

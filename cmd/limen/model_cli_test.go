@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ostap-mykhaylyak/limen/internal/auth"
 	"github.com/ostap-mykhaylyak/limen/internal/model"
 	"github.com/ostap-mykhaylyak/limen/internal/secret"
 	"github.com/ostap-mykhaylyak/limen/internal/store"
@@ -26,7 +28,13 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	h := &harness{out: &bytes.Buffer{}, errOut: &bytes.Buffer{}}
+	dir := t.TempDir()
+	tokens, err := auth.OpenTokens(filepath.Join(dir, "tokens.json"), filepath.Join(dir, ".tokens.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	h.cli = &cli{
+		tokens: tokens,
 		certs:  t.TempDir(),
 		store:  s,
 		out:    h.out,

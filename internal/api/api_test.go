@@ -44,6 +44,7 @@ type env struct {
 	api      *API
 	store    *store.Store
 	sessions *auth.Sessions
+	tokens   *auth.Tokens
 	dir      string
 	cfg      *config.Config
 	applies  int
@@ -61,6 +62,10 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
+	e.tokens, err = auth.OpenTokens(filepath.Join(dir, "tokens.json"), filepath.Join(dir, ".tokens.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	e.api = e.build()
 	for _, u := range []struct{ name, role string }{{"alice", model.RoleAdmin}, {"olga", model.RoleOperator}, {"vic", model.RoleViewer}} {
 		e.putUser(u.name, u.role, knownHash(t))
@@ -72,6 +77,7 @@ func (e *env) build() *API {
 	return New(Deps{
 		Store:    e.store,
 		Sessions: e.sessions,
+		Tokens:   e.tokens,
 		Limiter:  auth.NewLimiter(),
 		Config:   func() *config.Config { return e.cfg },
 		Apply: func(bool) (nginx.Result, error) {

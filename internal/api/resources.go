@@ -22,16 +22,19 @@ type collection struct {
 	kind  model.Kind
 	read  string // the least role that may read it
 	write string // the least role that may change it
+	// sessionWrites keeps the changes out of reach of API tokens.
+	sessionWrites bool
 }
 
 var collections = []collection{
-	{"hosts", model.KindProxyHost, model.RoleViewer, model.RoleOperator},
-	{"redirects", model.KindRedirect, model.RoleViewer, model.RoleOperator},
-	{"streams", model.KindStream, model.RoleViewer, model.RoleOperator},
-	{"access-lists", model.KindAccessList, model.RoleViewer, model.RoleOperator},
-	{"certificates", model.KindCertificate, model.RoleViewer, model.RoleOperator},
+	{"hosts", model.KindProxyHost, model.RoleViewer, model.RoleOperator, false},
+	{"redirects", model.KindRedirect, model.RoleViewer, model.RoleOperator, false},
+	{"streams", model.KindStream, model.RoleViewer, model.RoleOperator, false},
+	{"access-lists", model.KindAccessList, model.RoleViewer, model.RoleOperator, false},
+	{"certificates", model.KindCertificate, model.RoleViewer, model.RoleOperator, false},
 	// Users are the keys to the panel: only admins see them at all.
-	{"users", model.KindUser, model.RoleAdmin, model.RoleAdmin},
+	// Nor can a token touch them: they are credentials.
+	{"users", model.KindUser, model.RoleAdmin, model.RoleAdmin, true},
 }
 
 func (a *API) collection(c collection) {
@@ -44,7 +47,7 @@ func (a *API) collection(c collection) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	})
-	a.route("POST "+base, c.write, func(w http.ResponseWriter, r *http.Request, p *principal) {
+	a.handle("POST "+base, c.write, c.sessionWrites, func(w http.ResponseWriter, r *http.Request, p *principal) {
 		a.write(w, r, p, c, "", true)
 	})
 	a.route("GET "+base+"/{name}", c.read, func(w http.ResponseWriter, r *http.Request, p *principal) {
@@ -55,10 +58,10 @@ func (a *API) collection(c collection) {
 		}
 		writeJSON(w, http.StatusOK, a.view(doc))
 	})
-	a.route("PUT "+base+"/{name}", c.write, func(w http.ResponseWriter, r *http.Request, p *principal) {
+	a.handle("PUT "+base+"/{name}", c.write, c.sessionWrites, func(w http.ResponseWriter, r *http.Request, p *principal) {
 		a.write(w, r, p, c, r.PathValue("name"), false)
 	})
-	a.route("DELETE "+base+"/{name}", c.write, func(w http.ResponseWriter, r *http.Request, p *principal) {
+	a.handle("DELETE "+base+"/{name}", c.write, c.sessionWrites, func(w http.ResponseWriter, r *http.Request, p *principal) {
 		a.remove(w, r, p, c, r.PathValue("name"))
 	})
 	a.route("GET "+base+"/{name}/history", c.read, func(w http.ResponseWriter, r *http.Request, p *principal) {
@@ -69,7 +72,7 @@ func (a *API) collection(c collection) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": revs})
 	})
-	a.route("POST "+base+"/{name}/rollback", c.write, func(w http.ResponseWriter, r *http.Request, p *principal) {
+	a.handle("POST "+base+"/{name}/rollback", c.write, c.sessionWrites, func(w http.ResponseWriter, r *http.Request, p *principal) {
 		a.rollback(w, r, p, c, r.PathValue("name"))
 	})
 }
@@ -169,6 +172,15 @@ func (a *API) remove(w http.ResponseWriter, r *http.Request, p *principal, c col
 	}
 	if c.kind == model.KindUser {
 		a.d.Sessions.DeleteUser(name, "")
+		// Revoked, not orphaned: a rollback of the user must not bring
+		// its keys back with it.
+		if a.d.Tokens != nil {
+			if n, err := a.d.Tokens.DeleteUser(name); err != nil {
+				a.d.Log.Error("API tokens of a removed user", "user", name, "error", err.Error())
+			} else if n > 0 {
+				a.d.Log.Info("API tokens revoked with their user", "user", name, "tokens", n)
+			}
+		}
 	}
 	if c.kind == model.KindCertificate && a.d.Certificates != nil {
 		// Moved aside, not destroyed: an uploaded certificate cannot be

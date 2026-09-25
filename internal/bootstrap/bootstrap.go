@@ -160,7 +160,15 @@ func (l Layout) PurgeTargets() []string {
 
 // Init installs limen on this machine: layout, configuration, binary,
 // systemd unit and logrotate policy. It is idempotent.
-func Init(version string, out io.Writer) error {
+//
+// Packaged is for the Debian package, which owns the binary, the unit
+// (under /usr/lib/systemd/system) and the logrotate policy: Init then
+// prepares the layout and saves the nginx tree only. A unit written to
+// /etc/systemd/system would shadow the package's, and every upgrade of
+// the package would leave the old one in charge. Init notices the
+// package by itself, so that an operator who runs --init by habit does
+// not do that damage.
+func Init(version string, out io.Writer, packaged bool) error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("limen installs on Linux only (this is %s)", runtime.GOOS)
 	}
@@ -181,6 +189,21 @@ func Init(version string, out io.Writer) error {
 		fmt.Fprintf(out, "warning: could not back up %s: %v\n", paths.NginxConfDir, err)
 	} else if backup != "" {
 		fmt.Fprintf(out, "existing nginx configuration backed up to %s\n", backup)
+	}
+
+	if !packaged {
+		if _, err := os.Stat(paths.PackagedUnitFile); err == nil {
+			packaged = true
+			fmt.Fprintf(out, "%s belongs to the limen package: binary, unit and logrotate policy are left to it\n", paths.PackagedUnitFile)
+		}
+	}
+	if packaged {
+		fmt.Fprintf(out, "\nlimen %s is ready, not started: starting it takes nginx over. Next steps:\n", version)
+		fmt.Fprintf(out, "  1. review %s (the panel stays on loopback: nginx publishes it)\n", l.ConfigFile)
+		fmt.Fprintln(out, "  2. optionally, limen --import to bring the current nginx sites into the model")
+		fmt.Fprintln(out, "  3. limen user add NAME --role admin --password-stdin")
+		fmt.Fprintln(out, "  4. systemctl enable --now limen")
+		return nil
 	}
 
 	if err := installSelf(paths.Binary); err != nil {

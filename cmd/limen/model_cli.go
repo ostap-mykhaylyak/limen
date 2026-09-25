@@ -24,6 +24,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/ostap-mykhaylyak/limen/internal/acme"
+	"github.com/ostap-mykhaylyak/limen/internal/auth"
 	"github.com/ostap-mykhaylyak/limen/internal/config"
 	"github.com/ostap-mykhaylyak/limen/internal/logging"
 	"github.com/ostap-mykhaylyak/limen/internal/model"
@@ -47,6 +48,7 @@ var objectCommands = map[string]bool{
 	"rollback": true,
 	"apply":    true,
 	"logs":     true,
+	"token":    true,
 }
 
 // cli carries what every object command needs. Tests build one on a
@@ -68,6 +70,9 @@ type cli struct {
 
 	// config reads config.yaml; tests give their own.
 	config func() (*config.Config, error)
+
+	// tokens are the API tokens; opened on first use, or by tests.
+	tokens *auth.Tokens
 }
 
 // runObject is the entry point from main.
@@ -137,6 +142,8 @@ func (c *cli) run(noun string, args []string) error {
 		return c.applyCmd(args)
 	case "logs":
 		return c.logsCmd(args)
+	case "token":
+		return c.tokenCmd(args)
 	}
 
 	kind, err := model.ParseKind(noun)
@@ -450,7 +457,7 @@ func (c *cli) write(kind model.Kind, args []string, create bool) error {
 		return err
 	}
 	fmt.Fprintf(c.out, "%s %q saved\n", kind, stored.Header().Name)
-	return c.afterWrite()
+	return c.afterWrite(kind)
 }
 
 func (c *cli) remove(kind model.Kind, args []string) error {
@@ -476,7 +483,21 @@ func (c *cli) remove(kind model.Kind, args []string) error {
 		}
 	}
 	fmt.Fprintf(c.out, "%s %q deleted (bring it back with `limen history %s %s`)\n", kind, name, noun(kind), name)
-	return c.afterWrite()
+	if kind == model.KindUser {
+		// Revoked, not orphaned: a rollback of the user must not bring
+		// its keys back with it.
+		tokens, err := c.openTokens()
+		if err == nil {
+			var n int
+			if n, err = tokens.DeleteUser(name); n > 0 {
+				fmt.Fprintf(c.out, "%d API token(s) of %s revoked\n", n, name)
+			}
+		}
+		if err != nil {
+			fmt.Fprintf(c.errOut, "warning: the API tokens of %s were not revoked: %v (run `limen token list`)\n", name, err)
+		}
+	}
+	return c.afterWrite(kind)
 }
 
 func (c *cli) toggle(kind model.Kind, args []string, on bool) error {
@@ -515,7 +536,7 @@ func (c *cli) toggle(kind model.Kind, args []string, on bool) error {
 		return err
 	}
 	fmt.Fprintf(c.out, "%s %q %sd\n", kind, name, verb)
-	return c.afterWrite()
+	return c.afterWrite(kind)
 }
 
 func (c *cli) userPasswd(args []string) error {
@@ -548,7 +569,7 @@ func (c *cli) userPasswd(args []string) error {
 		return err
 	}
 	fmt.Fprintf(c.out, "password of user %q changed\n", name)
-	return c.afterWrite()
+	return c.afterWrite(model.KindUser)
 }
 
 // accessPasswd adds a basic-auth user to an access list, or changes the
@@ -602,7 +623,7 @@ func (c *cli) accessPasswd(args []string) error {
 	} else {
 		fmt.Fprintf(c.out, "password of %q in access list %q changed\n", username, list)
 	}
-	return c.afterWrite()
+	return c.afterWrite(model.KindAccessList)
 }
 
 func (c *cli) accessDelUser(args []string) error {
@@ -642,7 +663,7 @@ func (c *cli) accessDelUser(args []string) error {
 		return err
 	}
 	fmt.Fprintf(c.out, "user %q removed from access list %q\n", username, list)
-	return c.afterWrite()
+	return c.afterWrite(model.KindAccessList)
 }
 
 // ---------------------------------------------------------------------
@@ -711,7 +732,7 @@ func (c *cli) rollback(args []string) error {
 		return err
 	}
 	fmt.Fprintf(c.out, "%s %q rolled back to %s (the version it replaced is in the history)\n", kind, name, id)
-	return c.afterWrite()
+	return c.afterWrite(kind)
 }
 
 // ---------------------------------------------------------------------
@@ -988,9 +1009,14 @@ func (c *cli) change(note string) store.Change {
 // daemon to pick it up. The change is saved whatever happens here: a
 // failure says so, and leaves the model ahead of nginx until the next
 // apply.
-func (c *cli) afterWrite() error {
+// afterWrite applies the model to nginx at once, so that the operator
+// sees what nginx made of the change, then nudges the daemon. A panel
+// user is nothing nginx sees: its change is not applied, so that the
+// first admin, made on a fresh install, does not take nginx over before
+// the operator starts limen.
+func (c *cli) afterWrite(kind model.Kind) error {
 	var applyErr error
-	if c.apply != nil {
+	if c.apply != nil && kind != model.KindUser {
 		res, err := c.apply(false)
 		switch {
 		case errors.Is(err, errNoNginx):

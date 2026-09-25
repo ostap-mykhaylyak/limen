@@ -628,3 +628,6 @@ dialog.dialog::backdrop{background:rgba(16,18,23,.35)}
 .log.logs .log-row .msg.mono{white-space:pre-wrap;word-break:break-word;font-size:12px}
 .log-row .field{font-family:var(--mono);font-size:11px;color:var(--text-3);margin-left:8px}
 .toolbar select.input.narrow{width:auto}
+.token-row{display:flex;gap:8px;align-items:center}
+.token-row .input{flex:1;min-width:0}
+.table td.actions{text-align:right;white-space:nowrap}

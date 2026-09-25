@@ -273,7 +273,7 @@ func (c *cli) locationWrite(args []string, create bool) error {
 		return err
 	}
 	fmt.Fprintf(c.out, "location %s of proxy host %q saved\n", want.Match(), hostName)
-	return c.afterWrite()
+	return c.afterWrite(model.KindProxyHost)
 }
 
 func (c *cli) locationRemove(args []string) error {
@@ -304,7 +304,7 @@ func (c *cli) locationRemove(args []string) error {
 		return err
 	}
 	fmt.Fprintf(c.out, "location %s removed from proxy host %q\n", want.Match(), hostName)
-	return c.afterWrite()
+	return c.afterWrite(model.KindProxyHost)
 }
 
 func findLocation(ls []model.Location, want model.Location) int {
